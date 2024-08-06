@@ -1,0 +1,126 @@
+//@version=5
+indicator("Ultimate Multi-Factor Trading Indicator", overlay=true)
+
+
+// Input Parameters
+lookback = input.int(100, minval=10, title="Lookback Period")
+rsiLength = input.int(14, minval=1, title="RSI Length")
+rsiOverbought = input.int(70, minval=50, maxval=100, title="RSI Overbought")
+rsiOversold = input.int(30, minval=0, maxval=50, title="RSI Oversold")
+atrPeriod = input.int(14, minval=1, title="ATR Period")
+volumeMALength = input.int(20, minval=1, title="Volume MA Length")
+adxLength = input.int(14, minval=1, title="ADX Length")
+adxThreshold = input.int(25, minval=1, maxval=100, title="ADX Threshold")
+macdFast = input.int(12, title="MACD Fast Length")
+macdSlow = input.int(26, title="MACD Slow Length")
+macdSignal = input.int(9, title="MACD Signal Length")
+
+// Manual ADX Calculation
+dirmov(len) =>
+    up = ta.change(high)
+    down = -ta.change(low)
+    truerange = ta.atr(1)
+    plus = fixnan(100 * ta.ema(math.max(up, 0), len) / truerange)
+    minus = fixnan(100 * ta.ema(math.max(down, 0), len) / truerange)
+    sum = plus + minus
+    adx = 100 * ta.ema(math.abs(plus - minus) / (sum == 0 ? 1 : sum), len)
+    [plus, minus, adx]
+
+[diplus, diminus, adx] = dirmov(adxLength)
+
+// Ichimoku Cloud
+conversionPeriods = 9
+basePeriods = 26
+laggingSpan2Periods = 52
+displacement = 26
+
+donchian(len) => math.avg(ta.lowest(len), ta.highest(len))
+conversionLine = donchian(conversionPeriods)
+baseLine = donchian(basePeriods)
+leadLine1 = math.avg(conversionLine, baseLine)
+leadLine2 = donchian(laggingSpan2Periods)
+
+// Custom Strength Function
+customStrength(series) =>
+    rsi = ta.rsi(series, rsiLength)
+    atr = ta.atr(atrPeriod)
+    volumeMA = ta.sma(volume, volumeMALength)
+    
+    trendStrength = math.abs(ta.change(series, lookback)) / (ta.highest(high, lookback) - ta.lowest(low, lookback))
+    volatility = atr / series
+    volumeStrength = volume / volumeMA
+    
+    [macdLine, signalLine, _] = ta.macd(series, macdFast, macdSlow, macdSignal)
+    macdStrength = macdLine - signalLine
+    
+    ichimokuStrength = series > leadLine1 and series > leadLine2 ? 1 : series < leadLine1 and series < leadLine2 ? -1 : 0
+    
+    strength = (trendStrength * 0.2) + (volatility * 0.15) + (volumeStrength * 0.15) + (adx / 100 * 0.2) + (macdStrength * 0.15) + (ichimokuStrength * 0.15)
+    
+    [strength, rsi]
+
+// Calculate strength for buy and sell zones
+[buyStrength, buyRSI] = customStrength(low)
+[sellStrength, sellRSI] = customStrength(high)
+
+// Define buy and sell conditions
+buyCondition = buyStrength > 0.6 and buyRSI < rsiOversold and adx > adxThreshold and diplus > diminus
+sellCondition = sellStrength > 0.6 and sellRSI > rsiOverbought and adx > adxThreshold and diminus > diplus
+
+// Calculate support and resistance levels
+highestHigh = ta.highest(high, lookback)
+lowestLow = ta.lowest(low, lookback)
+
+// Function to create color gradient
+colorGradient(strength) =>
+    color.from_gradient(strength, 0, 1, color.new(color.gray, 70), color.new(color.blue, 0))
+
+// Visualize buy and sell zones
+buyZoneColor = buyCondition ? colorGradient(buyStrength) : na
+sellZoneColor = sellCondition ? colorGradient(sellStrength) : na
+
+// Plot support and resistance levels
+plot(highestHigh, color=color.red, linewidth=2, title="Resistance")
+plot(lowestLow, color=color.green, linewidth=2, title="Support")
+
+// Highlight buy and sell zones
+bgcolor(buyZoneColor, title="Buy Zone")
+bgcolor(sellZoneColor, title="Sell Zone")
+
+// Plot strength indicators
+plot(buyStrength, color=color.green, title="Buy Strength")
+plot(sellStrength, color=color.red, title="Sell Strength")
+
+// Plot Ichimoku Cloud
+plot(conversionLine, color=color.blue, title="Conversion Line")
+plot(baseLine, color=color.red, title="Base Line")
+p1 = plot(leadLine1, offset = displacement, color=color.green, title="Leading Span A")
+p2 = plot(leadLine2, offset = displacement, color=color.red, title="Leading Span B")
+fill(p1, p2, color = leadLine1 > leadLine2 ? color.rgb(67, 160, 71, 90) : color.rgb(244, 67, 54, 90))
+
+// Add labels for strong buy/sell signals
+if (buyCondition and buyStrength > 0.8)
+    label.new(bar_index, low, "Strong\nBuy", color=color.green, textcolor=color.white, style=label.style_label_up, size=size.small)
+
+if (sellCondition and sellStrength > 0.8)
+    label.new(bar_index, high, "Strong\nSell", color=color.red, textcolor=color.white, style=label.style_label_down, size=size.small)
+
+// Alerts
+alertcondition(buyCondition and buyStrength > 0.8, title="Strong Buy Alert", message="Strong Buy Signal Detected")
+alertcondition(sellCondition and sellStrength > 0.8, title="Strong Sell Alert", message="Strong Sell Signal Detected")
+
+// Display current values
+var table infoTable = table.new(position.top_right, 5, 4)
+table.cell(infoTable, 0, 0, "Buy Strength", bgcolor=color.new(color.green, 90))
+table.cell(infoTable, 1, 0, str.tostring(buyStrength, "#.##"), bgcolor=color.new(color.green, 90))
+table.cell(infoTable, 0, 1, "Sell Strength", bgcolor=color.new(color.red, 90))
+table.cell(infoTable, 1, 1, str.tostring(sellStrength, "#.##"), bgcolor=color.new(color.red, 90))
+table.cell(infoTable, 0, 2, "ADX", bgcolor=color.new(color.blue, 90))
+table.cell(infoTable, 1, 2, str.tostring(adx, "#.##"), bgcolor=color.new(color.blue, 90))
+table.cell(infoTable, 0, 3, "RSI", bgcolor=color.new(color.purple, 90))
+table.cell(infoTable, 1, 3, str.tostring(ta.rsi(close, rsiLength), "#.##"), bgcolor=color.new(color.purple, 90))
+[macdLine, signalLine, _] = ta.macd(close, macdFast, macdSlow, macdSignal)
+table.cell(infoTable, 2, 0, "MACD", bgcolor=color.new(color.orange, 90))
+table.cell(infoTable, 3, 0, str.tostring(macdLine, "#.##"), bgcolor=color.new(color.orange, 90))
+table.cell(infoTable, 2, 1, "Ichimoku", bgcolor=color.new(color.teal, 90))
+table.cell(infoTable, 3, 1, close > leadLine1 and close > leadLine2 ? "Bullish" : close < leadLine1 and close < leadLine2 ? "Bearish" : "Neutral", bgcolor=color.new(color.teal, 90))
